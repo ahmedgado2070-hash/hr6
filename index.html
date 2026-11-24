@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>إدارة بيانات الموظفين - الفروع</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #f1f5f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 0.85rem; }
+    .card { border: none; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    
+    /* تنسيق الجدول المضغوط */
+    .table-compact th, .table-compact td { 
+      padding: 4px 6px !important; 
+      vertical-align: middle; 
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }
+    .table thead th { 
+      background-color: #1e293b; 
+      color: #fff; 
+      position: sticky; 
+      top: 0; 
+      z-index: 10; 
+      font-weight: 600;
+    }
+    
+    /* حقول الإدخال المضغوطة */
+    .edit-input { 
+      min-width: 115px; 
+      height: 26px;
+      font-size: 0.8rem;
+      border: 1px solid #cbd5e1; 
+      border-radius: 4px; 
+      padding: 2px 6px; 
+      transition: 0.15s; 
+    }
+    .edit-input:focus { 
+      border-color: #2563eb; 
+      box-shadow: 0 0 0 2px rgba(37,99,235,0.15); 
+      outline: none; 
+    }
+
+    /* ألوان حالات الحفظ التلقائي */
+    .saving-row { background-color: #fef9c3 !important; transition: background-color 0.2s; }
+    .saved-row { background-color: #dcfce7 !important; transition: background-color 0.6s; }
+    .error-row { background-color: #fee2e2 !important; }
+    
+    /* توسيع ارتفاع حاوية الجدول لعرض صفوف أكثر */
+    .table-container { max-height: 82vh; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; }
+    .status-badge { font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; font-weight: 600; }
+    .name-col { max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+</head>
+<body>
+
+<div class="container-fluid py-2 px-3">
+  <div class="card p-3">
+    <!-- الشريط العلوي المضغوط -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+      <div class="d-flex align-items-center gap-2">
+        <h5 class="fw-bold text-dark mb-0">متابعة الموظفين</h5>
+        <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+          العدد: <strong id="totalCount">0</strong>
+        </span>
+      </div>
+
+      <!-- أدوات الفلترة وحالة الحفظ في سطر واحد -->
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <select id="branchFilter" class="form-select form-select-sm" style="width: 200px;" onchange="filterTable()">
+          <option value="ALL">-- جميع الفروع --</option>
+        </select>
+
+        <input type="text" id="searchInput" class="form-control form-control-sm" style="width: 200px;" placeholder="بحث بالاسم أو الكود..." onkeyup="filterTable()">
+
+        <span id="saveStatus" class="status-badge bg-light text-secondary border">
+          حفظ تلقائي ✓
+        </span>
+
+        <button id="refreshBtn" class="btn btn-sm btn-outline-secondary" onclick="fetchData()">
+          تحديث
+        </button>
+      </div>
+    </div>
+
+    <!-- شاشة التحميل -->
+    <div id="loader" class="text-center py-4">
+      <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+      <span class="ms-2 text-muted">جاري جلب البيانات...</span>
+    </div>
+
+    <!-- الجدول المضغوط -->
+    <div class="table-container d-none" id="tableWrapper">
+      <table class="table table-sm table-bordered table-hover table-compact text-center mb-0">
+        <thead>
+          <tr>
+            <th>الفرع</th>
+            <th>الكود</th>
+            <th>الاسم</th>
+            <th>الوظيفة</th>
+            <th>التعيين</th>
+            <th>ملاحظات</th>
+            <th>ملاحظات 2</th>
+            <th>اغتراب نهائي</th>
+            <th>نقل</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API_URL = "https://script.google.com/macros/s/AKfycbzguisMbFiLAaOnKhxDMwmg_1Oby-HDD9j-qbeafssc4720_kvJS6GvEGVyKwVidNrKrQ/exec";
+
+  let allEmployees = [];
+  let debounceTimers = {};
+
+  function escapeHtml(text) {
+    if (text === null || text === undefined) return "";
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function setStatus(type, message) {
+    const statusEl = document.getElementById("saveStatus");
+    statusEl.className = "status-badge border ";
+    if (type === "saving") {
+      statusEl.classList.add("bg-warning", "text-dark");
+      statusEl.innerHTML = `<span class="spinner-border spinner-border-sm me-1" style="width:0.7rem;height:0.7rem;"></span> ${message}`;
+    } else if (type === "saved") {
+      statusEl.classList.add("bg-success", "text-white");
+      statusEl.textContent = message;
+    } else if (type === "error") {
+      statusEl.classList.add("bg-danger", "text-white");
+      statusEl.textContent = message;
+    } else {
+      statusEl.classList.add("bg-light", "text-secondary");
+      statusEl.textContent = message;
+    }
+  }
+
+  async function fetchData() {
+    document.getElementById("loader").classList.remove("d-none");
+    document.getElementById("tableWrapper").classList.add("d-none");
+    setStatus("idle", "جاري التحميل...");
+
+    try {
+      const response = await fetch(API_URL);
+      allEmployees = await response.json();
+      populateBranches();
+      filterTable();
+      setStatus("idle", "حفظ تلقائي ✓");
+    } catch (error) {
+      alert("حدث خطأ أثناء الاتصال بالملف.");
+      setStatus("error", "خطأ بالاتصال");
+      console.error(error);
+    } finally {
+      document.getElementById("loader").classList.add("d-none");
+      document.getElementById("tableWrapper").classList.remove("d-none");
+    }
+  }
+
+  function populateBranches() {
+    const branchSelect = document.getElementById("branchFilter");
+    const currentSelection = branchSelect.value;
+    const branches = [...new Set(allEmployees.map(emp => emp.branch))].sort();
+
+    branchSelect.innerHTML = '<option value="ALL">-- جميع الفروع --</option>';
+    branches.forEach(branch => {
+      const option = document.createElement("option");
+      option.value = branch;
+      option.textContent = branch;
+      branchSelect.appendChild(option);
+    });
+
+    if (branches.includes(currentSelection)) {
+      branchSelect.value = currentSelection;
+    }
+  }
+
+  function filterTable() {
+    const selectedBranch = document.getElementById("branchFilter").value;
+    const searchText = document.getElementById("searchInput").value.trim().toLowerCase();
+
+    const filtered = allEmployees.filter(emp => {
+      const matchBranch = (selectedBranch === "ALL" || emp.branch === selectedBranch);
+      const matchSearch = (
+        String(emp.name).toLowerCase().includes(searchText) || 
+        String(emp.code).includes(searchText)
+      );
+      return matchBranch && matchSearch;
+    });
+
+    renderTable(filtered);
+  }
+
+  function renderTable(data) {
+    const tbody = document.getElementById("tableBody");
+    tbody.innerHTML = "";
+    document.getElementById("totalCount").textContent = data.length;
+
+    data.forEach(emp => {
+      const tr = document.createElement("tr");
+      tr.id = `row-${emp.rowNumber}`;
+
+      tr.innerHTML = `
+        <td class="fw-semibold text-muted">${escapeHtml(emp.branch)}</td>
+        <td><span class="badge bg-secondary">${escapeHtml(emp.code)}</span></td>
+        <td class="text-end fw-bold name-col" title="${escapeHtml(emp.name)}">${escapeHtml(emp.name)}</td>
+        <td>${escapeHtml(emp.job)}</td>
+        <td>${escapeHtml(emp.hireDate)}</td>
+        <td class="text-danger">${escapeHtml(emp.notes1) || "-"}</td>
+        <td>
+          <input type="text" class="form-control edit-input" 
+            value="${escapeHtml(emp.notes2)}" 
+            oninput="handleAutoSave(${emp.rowNumber}, 'notes2', this.value)"
+            onchange="handleAutoSave(${emp.rowNumber}, 'notes2', this.value, true)">
+        </td>
+        <td>
+          <input type="text" class="form-control edit-input" 
+            value="${escapeHtml(emp.exileFinal)}" 
+            oninput="handleAutoSave(${emp.rowNumber}, 'exileFinal', this.value)"
+            onchange="handleAutoSave(${emp.rowNumber}, 'exileFinal', this.value, true)">
+        </td>
+        <td>
+          <input type="text" class="form-control edit-input" 
+            value="${escapeHtml(emp.transfer)}" 
+            oninput="handleAutoSave(${emp.rowNumber}, 'transfer', this.value)"
+            onchange="handleAutoSave(${emp.rowNumber}, 'transfer', this.value, true)">
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function handleAutoSave(rowNumber, field, value, immediate = false) {
+    const emp = allEmployees.find(e => e.rowNumber === rowNumber);
+    if (!emp) return;
+
+    if (emp[field] === value && !immediate) return;
+
+    emp[field] = value;
+
+    const rowEl = document.getElementById(`row-${rowNumber}`);
+    if (rowEl) {
+      rowEl.classList.remove("saved-row", "error-row");
+      rowEl.classList.add("saving-row");
+    }
+    setStatus("saving", "جاري الحفظ...");
+
+    clearTimeout(debounceTimers[rowNumber]);
+
+    const delay = immediate ? 0 : 800;
+
+    debounceTimers[rowNumber] = setTimeout(() => {
+      sendRowUpdate(emp);
+    }, delay);
+  }
+
+  async function sendRowUpdate(empRecord) {
+    const rowEl = document.getElementById(`row-${empRecord.rowNumber}`);
+
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ updates: [empRecord] })
+      });
+
+      const result = await response.json();
+      if (result.status === "success") {
+        if (rowEl) {
+          rowEl.classList.remove("saving-row", "error-row");
+          rowEl.classList.add("saved-row");
+          setTimeout(() => rowEl.classList.remove("saved-row"), 1800);
+        }
+        const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setStatus("saved", `تم الحفظ ✓ (${timeNow})`);
+      } else {
+        throw new Error("Server error");
+      }
+    } catch (error) {
+      console.error("خطأ في الحفظ:", error);
+      if (rowEl) {
+        rowEl.classList.remove("saving-row");
+        rowEl.classList.add("error-row");
+      }
+      setStatus("error", "فشل الحفظ!");
+    }
+  }
+
+  window.onload = fetchData;
+</script>
+
+</body>
+</html>
